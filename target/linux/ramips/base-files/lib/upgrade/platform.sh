@@ -78,6 +78,7 @@ platform_check_image() {
 	microwrt|\
 	miniembplug|\
 	miniembwifi|\
+	xiaomi,miwifi-r3|\
 	miwifi-mini|\
 	miwifi-nano|\
 	mlw221|\

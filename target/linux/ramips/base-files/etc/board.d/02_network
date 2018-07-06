@@ -67,6 +67,7 @@ ramips_setup_interfaces()
 	dir-615-h1|\
 	firewrt|\
 	hlk-rm04|\
+	xiaomi,miwifi-r3|\
 	miwifi-mini|\
 	miwifi-nano|\
 	mt7621|\
@@ -169,6 +170,10 @@ ramips_setup_interfaces()
 	wli-tx4-ag300n|\
 	wrh-300cr)
 		ucidef_set_interface_lan "eth0"
+		;;
+	xiaomi,miwifi-r3)
+		ucidef_add_switch "switch0" \
+		"1:lan" "4:lan" "0:wan" "6@eth0"
 		;;
 	e1700|\
 	mt7620a_mt7530)
