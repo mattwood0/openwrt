@@ -1,21 +1,25 @@
-From fb6e1578cd73d7d81f675e75247a676423f32412 Mon Sep 17 00:00:00 2001
-From: John Crispin <blogic@openwrt.org>
-Date: Sun, 17 Nov 2013 17:41:46 +0100
+From 71b417d65f77cc115544cd404c5330d54d596d2a Mon Sep 17 00:00:00 2001
+From: Chen Minqiang <ptpt52@gmail.com>
+Date: Sat, 10 Mar 2018 14:04:36 +0800
 Subject: [PATCH 38/53] mtd: ralink: add mt7620 nand driver
 
-Signed-off-by: John Crispin <blogic@openwrt.org>
+refine && code clean up
+
+Signed-off-by: Chen Minqiang <ptpt52@gmail.com>
 ---
  drivers/mtd/maps/Kconfig       |    4 +
  drivers/mtd/maps/Makefile      |    2 +
- drivers/mtd/maps/ralink_nand.c | 2136 ++++++++++++++++++++++++++++++++++++++++
+ drivers/mtd/maps/ralink_nand.c | 2098 ++++++++++++++++++++++++++++++++++++++++
  drivers/mtd/maps/ralink_nand.h |  232 +++++
- 4 files changed, 2374 insertions(+)
+ 4 files changed, 2336 insertions(+)
  create mode 100644 drivers/mtd/maps/ralink_nand.c
  create mode 100644 drivers/mtd/maps/ralink_nand.h
 
+diff --git a/drivers/mtd/maps/Kconfig b/drivers/mtd/maps/Kconfig
+index 542fdf8..0f09ab5 100644
 --- a/drivers/mtd/maps/Kconfig
 +++ b/drivers/mtd/maps/Kconfig
-@@ -399,4 +399,8 @@ config MTD_LATCH_ADDR
+@@ -419,4 +419,8 @@ config MTD_LATCH_ADDR
  
            If compiled as a module, it will be called latch-addr-flash.
  
@@ -24,17 +28,22 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	depends on RALINK && SOC_MT7620
 +
  endmenu
+diff --git a/drivers/mtd/maps/Makefile b/drivers/mtd/maps/Makefile
+index b849aaf..8e65523 100644
 --- a/drivers/mtd/maps/Makefile
 +++ b/drivers/mtd/maps/Makefile
-@@ -43,3 +43,5 @@ obj-$(CONFIG_MTD_VMU)		+= vmu-flash.o
+@@ -48,3 +48,5 @@ obj-$(CONFIG_MTD_VMU)		+= vmu-flash.o
  obj-$(CONFIG_MTD_GPIO_ADDR)	+= gpio-addr-flash.o
  obj-$(CONFIG_MTD_LATCH_ADDR)	+= latch-addr-flash.o
  obj-$(CONFIG_MTD_LANTIQ)	+= lantiq-flash.o
 +obj-$(CONFIG_MTD_NAND_MT7620)	+= ralink_nand.o
 +
+diff --git a/drivers/mtd/maps/ralink_nand.c b/drivers/mtd/maps/ralink_nand.c
+new file mode 100644
+index 0000000..370bbb2
 --- /dev/null
 +++ b/drivers/mtd/maps/ralink_nand.c
-@@ -0,0 +1,2136 @@
+@@ -0,0 +1,2098 @@
 +#define DEBUG
 +#include <linux/device.h>
 +#undef DEBUG
@@ -60,10 +69,16 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +#define LARGE_MTD_CONFIG_PART_SIZE     (CFG_BLOCKSIZE<<2)
 +#define LARGE_MTD_FACTORY_PART_SIZE    (CFG_BLOCKSIZE<<1)
 +
-+
 +#define BLOCK_ALIGNED(a) ((a) & (CFG_BLOCKSIZE - 1))
 +
 +#define READ_STATUS_RETRY	1000
++
++struct nand_ecclayout {
++	__u32 eccbytes;
++	__u32 eccpos[MTD_MAX_ECCPOS_ENTRIES_LARGE];
++	__u32 oobavail;
++	struct nand_oobfree oobfree[MTD_MAX_OOBFREE_ENTRIES_LARGE];
++};
 +
 +struct mtd_info *ranfc_mtd = NULL;
 +
@@ -116,14 +131,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	if (status & NAND_STATUS_FAIL) {
 +		printk("%s: fail \n", __func__);
 +	}
-+	
-+	return (int)(status & NAND_STATUS_FAIL);
 +
++	return (int)(status & NAND_STATUS_FAIL);
 +}
 +
-+
-+
-+/** 
++/**
 + * clear NFC and flash chip.
 + */
 +static int nfc_all_reset(void)
@@ -156,7 +168,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +}
 +
 +/** NOTICE: only called by nfc_wait_ready().
-+ * @return -1, nfc can not get transction done 
++ * @return -1, nfc can not get transction done
 + * @return 0, ok.
 + */
 +static int _nfc_read_status(char *status)
@@ -171,26 +183,26 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	//fixme, should we check nfc status?
 +	CLEAR_INT_STATUS();
 +
-+	ra_outl(NFC_CMD1, cmd1); 	
-+	ra_outl(NFC_CONF, conf); 
++	ra_outl(NFC_CMD1, cmd1);
++	ra_outl(NFC_CONF, conf);
 +
-+	/* FIXME, 
-+	 * 1. since we have no wired ready signal, directly 
++	/* FIXME,
++	 * 1. since we have no wired ready signal, directly
 +	 * calling this function is not gurantee to read right status under ready state.
 +	 * 2. the other side, we can not determine how long to become ready, this timeout retry is nonsense.
 +	 * 3. SUGGESTION: call nfc_read_status() from nfc_wait_ready(),
 +	 * that is aware about caller (in sementics) and has snooze plused nfc ND_DONE.
 +	 */
-+	retry = READ_STATUS_RETRY; 
++	retry = READ_STATUS_RETRY;
 +	do {
 +		nfc_st = ra_inl(NFC_STATUS);
 +		int_st = ra_inl(NFC_INT_ST);
-+		
++
 +		ndelay(10);
 +	} while (!(int_st & INT_ST_RX_BUF_RDY) && retry--);
 +
 +	if (!(int_st & INT_ST_RX_BUF_RDY)) {
-+		printk("nfc_read_status: NFC fail, int_st(%x), retry:%x. nfc:%x, reset nfc and flash. \n", 
++		printk("nfc_read_status: NFC fail, int_st(%x), retry:%x. nfc:%x, reset nfc and flash. \n",
 +		       int_st, retry, nfc_st);
 +		nfc_all_reset();
 +		*status = NAND_STATUS_FAIL;
@@ -233,7 +245,6 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +}
 +#endif
 +
-+
 +/**
 + * generic function to get data from flash.
 + * @return data length reading from flash.
@@ -249,8 +260,8 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	unsigned int ret_data;
 +	int ret_size;
 +
-+	// receive data by use_gdma 
-+	if (use_gdma) { 
++	// receive data by use_gdma
++	if (use_gdma) {
 +		//if (_ra_nand_dma_pull((unsigned long)p, len)) {
 +		if (1) {
 +			printk("%s: fail \n", __func__);
@@ -268,15 +279,15 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		if (int_st & INT_ST_RX_BUF_RDY) {
 +
 +			ret_data = ra_inl(NFC_DATA);
-+			ra_outl(NFC_INT_ST, INT_ST_RX_BUF_RDY); 
++			ra_outl(NFC_INT_ST, INT_ST_RX_BUF_RDY);
 +#ifdef RW_DATA_BY_BYTE
 +			ret_size = sizeof(unsigned int);
 +			ret_size = min(ret_size, len);
 +			len -= ret_size;
 +			while (ret_size-- > 0) {
-+				//nfc is little endian 
++				//nfc is little endian
 +				*p++ = ret_data & 0x0ff;
-+				ret_data >>= 8; 
++				ret_data >>= 8;
 +			}
 +#else
 +			ret_size = min(len, 4);
@@ -287,7 +298,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +				__u8 *q = (__u8 *)p;
 +				while (ret_size-- > 0) {
 +					*q++ = ret_data & 0x0ff;
-+					ret_data >>= 8; 
++					ret_data >>= 8;
 +				}
 +				p = (__u32 *)q;
 +			}
@@ -299,7 +310,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		}
 +		else {
 +			udelay(1);
-+			if (retry-- < 0) 
++			if (retry-- < 0)
 +				break;
 +		}
 +	}
@@ -326,11 +337,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	unsigned int tx_data = 0;
 +	int tx_size, iter = 0;
 +
-+	// receive data by use_gdma 
-+	if (use_gdma) { 
++	// receive data by use_gdma
++	if (use_gdma) {
 +		//if (_ra_nand_dma_push((unsigned long)p, len))
 +		if (1)
-+			len = 0;		
++			len = 0;
 +		printk("%s: fail \n", __func__);
 +		return len;
 +	}
@@ -373,13 +384,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		}
 +	}
 +
-+	
 +#ifdef RW_DATA_BY_BYTE
 +	return (int)(p - buf);
 +#else
 +	return ((int)p - (int)buf);
 +#endif
-+
 +}
 +
 +static int nfc_select_chip(struct ra_nand_chip *ra, int chipnr)
@@ -411,7 +420,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +	if (!read_only)
 +		return nfc_check_wp();
-+	
++
 +	return 0;
 +}
 +
@@ -430,14 +439,14 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		snooze_ms = 1;
 +	else
 +		schedule_timeout(snooze_ms * HZ / 1000);
-+	
++
 +	snooze_ms = retry = snooze_ms *1000000 / 100 ;  // ndelay(100)
 +
 +	while (!NFC_TRANS_DONE() && retry--) {
 +		if (!cond_resched())
 +			ndelay(100);
 +	}
-+	
++
 +	if (!NFC_TRANS_DONE()) {
 +		printk("nfc_wait_ready: no transaction done \n");
 +		return NAND_STATUS_FAIL;
@@ -450,7 +459,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	}
 +
 +	if (status == 0) {
-+		printk("nfc_wait_ready: no device ready. \n");	
++		printk("nfc_wait_ready: no device ready. \n");
 +		return NAND_STATUS_FAIL;
 +	}
 +
@@ -465,7 +474,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		ndelay(100);
 +	}
 +	if (retry<0)
-+		printk("nfc_wait_ready 2: no device ready, status(%x). \n", status);	
++		printk("nfc_wait_ready 2: no device ready, status(%x). \n", status);
 +
 +	return status;
 +#endif
@@ -473,7 +482,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +/**
 + * return 0: erase OK
-+ * return -EIO: fail 
++ * return -EIO: fail
 + */
 +int nfc_erase_block(struct ra_nand_chip *ra, int row_addr)
 +{
@@ -486,25 +495,24 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	conf = 0x00511 | ((CFG_ROW_ADDR_CYCLE)<<16);
 +
 +	// set NFC
-+	ra_dbg("%s: cmd1: %lx, cmd2:%lx bus_addr: %lx, conf: %lx \n", 
++	ra_dbg("%s: cmd1: %lx, cmd2:%lx bus_addr: %lx, conf: %lx \n",
 +	       __func__, cmd1, cmd2, bus_addr, conf);
 +
 +	//fixme, should we check nfc status?
 +	CLEAR_INT_STATUS();
 +
-+	ra_outl(NFC_CMD1, cmd1); 	
++	ra_outl(NFC_CMD1, cmd1);
 +	ra_outl(NFC_CMD2, cmd2);
 +	ra_outl(NFC_ADDR, bus_addr);
-+	ra_outl(NFC_CONF, conf); 
++	ra_outl(NFC_CONF, conf);
 +
-+	status = nfc_wait_ready(3);  //erase wait 3ms 
++	status = nfc_wait_ready(3);  //erase wait 3ms
 +	if (status & NAND_STATUS_FAIL) {
 +		printk("%s: fail \n", __func__);
 +		return -EIO;
 +	}
-+	
-+	return 0;
 +
++	return 0;
 +}
 +
 +static inline int _nfc_read_raw_data(int cmd1, int cmd2, int bus_addr, int bus_addr2, int conf, char *buf, int len, int flags)
@@ -512,14 +520,13 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int ret;
 +
 +	CLEAR_INT_STATUS();
-+	ra_outl(NFC_CMD1, cmd1); 	
++	ra_outl(NFC_CMD1, cmd1);
 +	ra_outl(NFC_CMD2, cmd2);
 +	ra_outl(NFC_ADDR, bus_addr);
-+#if defined (CONFIG_RALINK_RT6855) || defined (CONFIG_RALINK_RT6855A) || \
-+    defined (CONFIG_RALINK_MT7620) || defined (CONFIG_RALINK_MT7621)	
++#if defined (CONFIG_SOC_MT7620)
 +	ra_outl(NFC_ADDR2, bus_addr2);
-+#endif	
-+	ra_outl(NFC_CONF, conf); 
++#endif
++	ra_outl(NFC_CONF, conf);
 +
 +	ret = _ra_nand_pull_data(buf, len, 0);
 +	if (ret != len) {
@@ -528,7 +535,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	}
 +
 +	//FIXME, this section is not necessary
-+	ret = nfc_wait_ready(0); //wait ready 
++	ret = nfc_wait_ready(0); //wait ready
 +	/* to prevent the DATA FIFO 's old data from next operation */
 +	ra_outl(NFC_CTRL, ra_inl(NFC_CTRL) | 0x02); //clear data buffer
 +	ra_outl(NFC_CTRL, ra_inl(NFC_CTRL) & ~0x02); //clear data buffer
@@ -546,14 +553,13 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int ret;
 +
 +	CLEAR_INT_STATUS();
-+	ra_outl(NFC_CMD1, cmd1); 	
-+	ra_outl(NFC_CMD3, cmd3); 	
++	ra_outl(NFC_CMD1, cmd1);
++	ra_outl(NFC_CMD3, cmd3);
 +	ra_outl(NFC_ADDR, bus_addr);
-+#if defined (CONFIG_RALINK_RT6855) || defined (CONFIG_RALINK_RT6855A) || \
-+    defined (CONFIG_RALINK_MT7620) || defined (CONFIG_RALINK_MT7621)	
++#if defined (CONFIG_SOC_MT7620)
 +	ra_outl(NFC_ADDR2, bus_addr2);
-+#endif	
-+	ra_outl(NFC_CONF, conf); 
++#endif
++	ra_outl(NFC_CONF, conf);
 +
 +	ret = _ra_nand_push_data(buf, len, 0);
 +	if (ret != len) {
@@ -587,14 +593,14 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int status;
 +
 +	int pages_perblock = 1<<(ra->erase_shift - ra->page_shift);
-+	// constrain of nfc read function 
++	// constrain of nfc read function
 +
 +#if defined (WORKAROUND_RX_BUF_OV)
-+	BUG_ON (len > 60); 	//problem of rx-buffer overrun 
++	BUG_ON (len > 60); 	//problem of rx-buffer overrun
 +#endif
 +	BUG_ON (offs >> ra->oob_shift); //page boundry
 +	BUG_ON ((unsigned int)(((offs + len) >> ra->oob_shift) + page) >
-+		((page + pages_perblock) & ~(pages_perblock-1))); //block boundry
++	        ((page + pages_perblock) & ~(pages_perblock-1))); //block boundry
 +
 +	use_gdma = flags & FLAG_USE_GDMA;
 +	ecc_en = flags & FLAG_ECC_EN;
@@ -605,14 +611,14 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		bus_addr2 = page >> (CFG_COLUMN_ADDR_CYCLE*8);
 +		cmd1 = 0x0;
 +		cmd2 = 0x30;
-+		conf = 0x000511| ((CFG_ADDR_CYCLE)<<16) | (len << 20); 
++		conf = 0x000511| ((CFG_ADDR_CYCLE)<<16) | (len << 20);
 +	}
 +	else {
 +		cmd1 = 0x50;
-+		conf = 0x000141| ((CFG_ADDR_CYCLE)<<16) | (len << 20); 
++		conf = 0x000141| ((CFG_ADDR_CYCLE)<<16) | (len << 20);
 +	}
-+	if (ecc_en) 
-+		conf |= (1<<3); 
++	if (ecc_en)
++		conf |= (1<<3);
 +	if (use_gdma)
 +		conf |= (1<<2);
 +
@@ -625,7 +631,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		return -EIO;
 +	}
 +
-+	return 0; 
++	return 0;
 +}
 +
 +/**
@@ -640,11 +646,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int status;
 +
 +	int pages_perblock = 1<<(ra->erase_shift - ra->page_shift);
-+	// constrain of nfc read function 
++	// constrain of nfc read function
 +
 +	BUG_ON (offs >> ra->oob_shift); //page boundry
 +	BUG_ON ((unsigned int)(((offs + len) >> ra->oob_shift) + page) >
-+		((page + pages_perblock) & ~(pages_perblock-1))); //block boundry 
++	        ((page + pages_perblock) & ~(pages_perblock-1))); //block boundry
 +
 +	use_gdma = flags & FLAG_USE_GDMA;
 +	bus_addr = (page << (CFG_COLUMN_ADDR_CYCLE*8)) | (offs & ((1<<CFG_COLUMN_ADDR_CYCLE*8) - 1));
@@ -659,13 +665,13 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	else {
 +		cmd1 = 0x08050;
 +		cmd3 = 0x10;
-+		conf = 0x001223 | ((CFG_ADDR_CYCLE)<<16) | ((len) << 20); 
++		conf = 0x001223 | ((CFG_ADDR_CYCLE)<<16) | ((len) << 20);
 +	}
 +	if (use_gdma)
 +		conf |= (1<<2);
 +
 +	// set NFC
-+	ra_dbg("%s: cmd1: %x, cmd3: %x bus_addr: %x, conf: %x, len:%x\n", 
++	ra_dbg("%s: cmd1: %x, cmd3: %x bus_addr: %x, conf: %x, len:%x\n",
 +	       __func__, cmd1, cmd3, bus_addr, conf, len);
 +
 +	status = _nfc_write_raw_data(cmd1, cmd3, bus_addr, bus_addr2, conf, buf, len, flags);
@@ -674,7 +680,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		return -EIO;
 +	}
 +
-+	return 0; 
++	return 0;
 +}
 +
 +
@@ -682,30 +688,30 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +int nfc_write_page(struct ra_nand_chip *ra, char *buf, int page, int flags);
 +
 +
-+#if !defined (WORKAROUND_RX_BUF_OV)	
++#if !defined (WORKAROUND_RX_BUF_OV)
 +static int one_bit_correction(char *ecc, char *expected, int *bytes, int *bits);
 +int nfc_ecc_verify(struct ra_nand_chip *ra, char *buf, int page, int mode)
 +{
 +	int ret, i;
 +	char *p, *e;
 +	int ecc;
-+	
++
 +	//ra_dbg("%s, page:%x mode:%d\n", __func__, page, mode);
 +
 +	if (mode == FL_WRITING) {
 +		int len = CFG_PAGESIZE + CFG_PAGE_OOBSIZE;
-+		int conf = 0x000141| ((CFG_ADDR_CYCLE)<<16) | (len << 20); 
-+		conf |= (1<<3); //(ecc_en) 
++		int conf = 0x000141| ((CFG_ADDR_CYCLE)<<16) | (len << 20);
++		conf |= (1<<3); //(ecc_en)
 +		//conf |= (1<<2); // (use_gdma)
 +
 +		p = ra->readback_buffers;
-+		ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_ECC_EN); 
-+		if (ret == 0) 
++		ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_ECC_EN);
++		if (ret == 0)
 +			goto ecc_check;
-+		
++
 +		//FIXME, double comfirm
 +		printk("%s: read back fail, try again \n",__func__);
-+		ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_ECC_EN); 
++		ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_ECC_EN);
 +		if (ret != 0) {
 +			printk("\t%s: read back fail agian \n",__func__);
 +			goto bad_block;
@@ -713,14 +719,14 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	}
 +	else if (mode == FL_READING) {
 +		p = buf;
-+	}	
++	}
 +	else
 +		return -2;
 +
 +ecc_check:
 +	p += CFG_PAGESIZE;
 +	if (!is_nand_page_2048) {
-+		ecc = ra_inl(NFC_ECC); 
++		ecc = ra_inl(NFC_ECC);
 +		if (ecc == 0) //clean page.
 +			return 0;
 +		e = (char*)&ecc;
@@ -737,14 +743,13 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			int eccpos = CONFIG_ECC_OFFSET + i;
 +			if (*(p + eccpos) != *(e + i)) {
 +				printk("%s mode:%s, invalid ecc, page: %x read:%x %x %x, ecc:%x \n",
-+						__func__, (mode == FL_READING)?"read":"write", page,	
-+						*(p+ CONFIG_ECC_OFFSET), *(p+ CONFIG_ECC_OFFSET+1), *(p+ CONFIG_ECC_OFFSET +2), ecc);
++				       __func__, (mode == FL_READING)?"read":"write", page,
++				       *(p+ CONFIG_ECC_OFFSET), *(p+ CONFIG_ECC_OFFSET+1), *(p+ CONFIG_ECC_OFFSET +2), ecc);
 +				return -1;
 +			}
 +		}
 +	}
-+#if defined (CONFIG_RALINK_RT6855) || defined (CONFIG_RALINK_RT6855A) || \
-+    defined (CONFIG_RALINK_MT7620) || defined (CONFIG_RALINK_MT7621)	
++#if defined (CONFIG_SOC_MT7620)
 +	else {
 +		int ecc2, ecc3, ecc4, qsz;
 +		char *e2, *e3, *e4;
@@ -779,26 +784,26 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			int eccpos = CONFIG_ECC_OFFSET + i;
 +			if (*(p + eccpos) != *(e + i)) {
 +				printk("%s mode:%s, invalid ecc, page: %x read:%x %x %x, ecc:%x \n",
-+						__func__, (mode == FL_READING)?"read":"write", page,
-+						*(p+ CONFIG_ECC_OFFSET), *(p+ CONFIG_ECC_OFFSET+1), *(p+ CONFIG_ECC_OFFSET +2), ecc);
++				       __func__, (mode == FL_READING)?"read":"write", page,
++				       *(p+ CONFIG_ECC_OFFSET), *(p+ CONFIG_ECC_OFFSET+1), *(p+ CONFIG_ECC_OFFSET +2), ecc);
 +				correction_flag |= 0x1;
 +			}
 +			if (*(p + eccpos + qsz) != *(e2 + i)) {
 +				printk("%s mode:%s, invalid ecc2, page: %x read:%x %x %x, ecc2:%x \n",
-+						__func__, (mode == FL_READING)?"read":"write", page,
-+						*(p+CONFIG_ECC_OFFSET+qsz), *(p+ CONFIG_ECC_OFFSET+1+qsz), *(p+ CONFIG_ECC_OFFSET+2+qsz), ecc2);
++				       __func__, (mode == FL_READING)?"read":"write", page,
++				       *(p+CONFIG_ECC_OFFSET+qsz), *(p+ CONFIG_ECC_OFFSET+1+qsz), *(p+ CONFIG_ECC_OFFSET+2+qsz), ecc2);
 +				correction_flag |= 0x2;
 +			}
 +			if (*(p + eccpos + qsz*2) != *(e3 + i)) {
 +				printk("%s mode:%s, invalid ecc3, page: %x read:%x %x %x, ecc3:%x \n",
-+						__func__, (mode == FL_READING)?"read":"write", page,
-+						*(p+CONFIG_ECC_OFFSET+qsz*2), *(p+ CONFIG_ECC_OFFSET+1+qsz*2), *(p+ CONFIG_ECC_OFFSET+2+qsz*2), ecc3);
++				       __func__, (mode == FL_READING)?"read":"write", page,
++				       *(p+CONFIG_ECC_OFFSET+qsz*2), *(p+ CONFIG_ECC_OFFSET+1+qsz*2), *(p+ CONFIG_ECC_OFFSET+2+qsz*2), ecc3);
 +				correction_flag |= 0x4;
 +			}
 +			if (*(p + eccpos + qsz*3) != *(e4 + i)) {
 +				printk("%s mode:%s, invalid ecc4, page: %x read:%x %x %x, ecc4:%x \n",
-+						__func__, (mode == FL_READING)?"read":"write", page,
-+						*(p+CONFIG_ECC_OFFSET+qsz*3), *(p+ CONFIG_ECC_OFFSET+1+qsz*3), *(p+ CONFIG_ECC_OFFSET+2+qsz*3), ecc4);
++				       __func__, (mode == FL_READING)?"read":"write", page,
++				       *(p+CONFIG_ECC_OFFSET+qsz*3), *(p+ CONFIG_ECC_OFFSET+1+qsz*3), *(p+ CONFIG_ECC_OFFSET+2+qsz*3), ecc4);
 +				correction_flag |= 0x8;
 +			}
 +		}
@@ -810,7 +815,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			{
 +				int bytes, bits;
 +				char *pBuf = p - CFG_PAGESIZE;
-+			
++
 +				if (one_bit_correction(p + CONFIG_ECC_OFFSET, e, &bytes, &bits) == 0)
 +				{
 +					pBuf[bytes] = pBuf[bytes] ^ (1 << bits);
@@ -827,7 +832,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			{
 +				int bytes, bits;
 +				char *pBuf = (p - CFG_PAGESIZE) + CFG_PAGESIZE/4;
-+			
++
 +				if (one_bit_correction((p + CONFIG_ECC_OFFSET + qsz), e2, &bytes, &bits) == 0)
 +				{
 +					pBuf[bytes] = pBuf[bytes] ^ (1 << bits);
@@ -843,7 +848,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			{
 +				int bytes, bits;
 +				char *pBuf = (p - CFG_PAGESIZE) + CFG_PAGESIZE/2;
-+			
++
 +				if (one_bit_correction((p + CONFIG_ECC_OFFSET + qsz * 2), e3, &bytes, &bits) == 0)
 +				{
 +					pBuf[bytes] = pBuf[bytes] ^ (1 << bits);
@@ -859,7 +864,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			{
 +				int bytes, bits;
 +				char *pBuf = (p - CFG_PAGESIZE) + CFG_PAGESIZE*3/4;
-+			
++
 +				if (one_bit_correction((p + CONFIG_ECC_OFFSET + qsz * 3), e4, &bytes, &bits) == 0)
 +				{
 +					pBuf[bytes] = pBuf[bytes] ^ (1 << bits);
@@ -874,7 +879,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		}
 +
 +	}
-+#endif	
++#endif
 +	return 0;
 +
 +bad_block:
@@ -883,11 +888,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +#else
 +
-+void ranfc_dump(void) 
-+{	
++void ranfc_dump(void)
++{
 +	int i;
 +	for (i=0; i<11; i++) {
-+		if (i==6) 
++		if (i==6)
 +			continue;
 +		printk("%x: %x \n", NFC_BASE + i*4, ra_inl(NFC_BASE + i*4));
 +	}
@@ -895,7 +900,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +/**
 + * @return 0, ecc OK or corrected.
-+ * @return NAND_STATUS_FAIL, ecc fail.   
++ * @return NAND_STATUS_FAIL, ecc fail.
 + */
 +
 +int nfc_ecc_verify(struct ra_nand_chip *ra, char *buf, int page, int mode)
@@ -903,16 +908,16 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int ret, i;
 +	char *p, *e;
 +	int ecc;
-+	
++
 +	if (ranfc_verify == 0)
 +		return 0;
 +
 +	ra_dbg("%s, page:%x mode:%d\n", __func__, page, mode);
 +
 +	if (mode == FL_WRITING) { // read back and memcmp
-+		ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_NONE); 
++		ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_NONE);
 +		if (ret != 0) //double comfirm
-+			ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_NONE); 
++			ret = nfc_read_page(ra, ra->readback_buffers, page, FLAG_NONE);
 +
 +		if (ret != 0) {
 +			printk("%s: mode:%x read back fail \n", __func__, mode);
@@ -920,8 +925,8 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		}
 +		return memcmp(buf, ra->readback_buffers, 1<<ra->page_shift);
 +	}
-+	
-+	if (mode == FL_READING) { 
++
++	if (mode == FL_READING) {
 +#if 0
 +		if (ra->sandbox_page == 0)
 +			return 0;
@@ -932,16 +937,16 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			return -1;
 +		}
 +#else
-+		/** @note: 
++		/** @note:
 +		 * The following command is actually not 'write' command to drive NFC to write flash.
 +		 * However, it can make NFC to calculate ECC, that will be used to compare with original ones.
 +		 * --YT
 +		 */
-+		unsigned int conf = 0x001223| (CFG_ADDR_CYCLE<<16) | (0x200 << 20) | (1<<3) | (1<<2); 
++		unsigned int conf = 0x001223| (CFG_ADDR_CYCLE<<16) | (0x200 << 20) | (1<<3) | (1<<2);
 +		_nfc_write_raw_data(0xff, 0xff, ra->sandbox_page<<ra->page_shift, conf, buf, 0x200, FLAG_USE_GDMA);
 +#endif
 +
-+		ecc = ra_inl(NFC_ECC); 
++		ecc = ra_inl(NFC_ECC);
 +		if (ecc == 0) //clean page.
 +			return 0;
 +		e = (char*)&ecc;
@@ -950,7 +955,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			int eccpos = CONFIG_ECC_OFFSET + i;
 +			if (*(p + eccpos) != *(e + i)) {
 +				printk("%s mode:%s, invalid ecc, page: %x read:%x %x %x, write:%x \n",
-+				       __func__, (mode == FL_READING)?"read":"write", page,	
++				       __func__, (mode == FL_READING)?"read":"write", page,
 +				       *(p+ CONFIG_ECC_OFFSET), *(p+ CONFIG_ECC_OFFSET+1), *(p+ CONFIG_ECC_OFFSET +2), ecc);
 +
 +				for (i=0; i<528; i++)
@@ -962,14 +967,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	}
 +
 +	return -1;
-+
 +}
-+
 +#endif
 +
-+
 +/**
-+ * @return -EIO, writing size is less than a page 
++ * @return -EIO, writing size is less than a page
 + * @return 0, OK
 + */
 +int nfc_read_page(struct ra_nand_chip *ra, char *buf, int page, int flags)
@@ -994,13 +996,13 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		len = min(60, size);
 +#else
 +		len = size;
-+#endif		
-+		bus_addr = (page << (CFG_COLUMN_ADDR_CYCLE*8)) | (offs & ((1<<CFG_COLUMN_ADDR_CYCLE*8)-1)); 
++#endif
++		bus_addr = (page << (CFG_COLUMN_ADDR_CYCLE*8)) | (offs & ((1<<CFG_COLUMN_ADDR_CYCLE*8)-1));
 +		if (is_nand_page_2048) {
 +			bus_addr2 = page >> (CFG_COLUMN_ADDR_CYCLE*8);
 +			cmd1 = 0x0;
 +			cmd2 = 0x30;
-+			conf = 0x000511| ((CFG_ADDR_CYCLE)<<16) | (len << 20); 
++			conf = 0x000511| ((CFG_ADDR_CYCLE)<<16) | (len << 20);
 +		}
 +		else {
 +			if (offs & ~(CFG_PAGESIZE-1))
@@ -1010,11 +1012,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			else
 +				cmd1 = 0;
 +
-+			conf = 0x000141| ((CFG_ADDR_CYCLE)<<16) | (len << 20); 
++			conf = 0x000141| ((CFG_ADDR_CYCLE)<<16) | (len << 20);
 +		}
 +#if !defined (WORKAROUND_RX_BUF_OV)
-+		if (ecc_en) 
-+			conf |= (1<<3); 
++		if (ecc_en)
++			conf |= (1<<3);
 +#endif
 +		if (use_gdma)
 +			conf |= (1<<2);
@@ -1031,9 +1033,9 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +	// verify and correct ecc
 +	if ((flags & (FLAG_VERIFY | FLAG_ECC_EN)) == (FLAG_VERIFY | FLAG_ECC_EN)) {
-+		status = nfc_ecc_verify(ra, buf, page, FL_READING);	
++		status = nfc_ecc_verify(ra, buf, page, FL_READING);
 +		if (status != 0) {
-+			printk("%s: fail, buf:%x, page:%x, flag:%x\n", 
++			printk("%s: fail, buf:%x, page:%x, flag:%x\n",
 +			       __func__, (unsigned int)buf, page, flags);
 +			return -EBADMSG;
 +		}
@@ -1047,7 +1049,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +}
 +
 +
-+/** 
++/**
 + * @return -EIO, fail to write
 + * @return 0, OK
 + */
@@ -1072,23 +1074,23 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	bus_addr = (page << (CFG_COLUMN_ADDR_CYCLE*8)); //write_page always write from offset 0.
 +
 +	if (is_nand_page_2048) {
-+	bus_addr2 = page >> (CFG_COLUMN_ADDR_CYCLE*8);
++		bus_addr2 = page >> (CFG_COLUMN_ADDR_CYCLE*8);
 +		cmd1 = 0x80;
 +		cmd3 = 0x10;
-+		conf = 0x001123| ((CFG_ADDR_CYCLE)<<16) | (size << 20); 
++		conf = 0x001123| ((CFG_ADDR_CYCLE)<<16) | (size << 20);
 +	}
 +	else {
-+	cmd1 = 0x8000;
-+	cmd3 = 0x10;
-+	conf = 0x001223| ((CFG_ADDR_CYCLE)<<16) | (size << 20); 
-+}
-+	if (ecc_en) 
++		cmd1 = 0x8000;
++		cmd3 = 0x10;
++		conf = 0x001223| ((CFG_ADDR_CYCLE)<<16) | (size << 20);
++	}
++	if (ecc_en)
 +		conf |= (1<<3); //enable ecc
 +	if (use_gdma)
 +		conf |= (1<<2);
 +
 +	// set NFC
-+	ra_dbg("nfc_write_page: cmd1: %x, cmd3: %x bus_addr: %x, conf: %x, len:%x\n", 
++	ra_dbg("nfc_write_page: cmd1: %x, cmd3: %x bus_addr: %x, conf: %x, len:%x\n",
 +	       cmd1, cmd3, bus_addr, conf, size);
 +
 +	status = _nfc_write_raw_data(cmd1, cmd3, bus_addr, bus_addr2, conf, buf, size, flags);
@@ -1096,7 +1098,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		printk("%s: fail \n", __func__);
 +		return -EIO;
 +	}
-+	
++
 +
 +	if (flags & FLAG_VERIFY) { // verify and correct ecc
 +		status = nfc_ecc_verify(ra, buf, page, FL_WRITING);
@@ -1111,7 +1113,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +		if (status != 0) {
 +			printk("%s: ecc_verify fail: ret:%x \n", __func__, status);
-+			oob[ra->badblockpos] = 0x33; 
++			oob[ra->badblockpos] = 0x33;
 +			page -= page % (CFG_BLOCKSIZE/CFG_PAGESIZE);
 +			printk("create a bad block at page %x\n", page);
 +			if (!is_nand_page_2048)
@@ -1125,7 +1127,6 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		}
 +	}
 +
-+
 +	ra->buffers_page = page; //cached
 +	return 0;
 +}
@@ -1133,7 +1134,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +
 +/*************************************************************
-+ * nand internal process 
++ * nand internal process
 + *************************************************************/
 +
 +/**
@@ -1167,31 +1168,28 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int ret = 0;
 +
 +	ret = mutex_lock_interruptible(ra->controller);
-+	if (!ret) 
++	if (!ret)
 +		ra->state = new_state;
 +
 +	return ret;
-+
 +}
 +
-+
-+
 +/*************************************************************
-+ * nand internal process 
++ * nand internal process
 + *************************************************************/
 +
-+int nand_bbt_get(struct ra_nand_chip *ra, int block)
++int ra_nand_bbt_get(struct ra_nand_chip *ra, int block)
 +{
 +	int byte, bits;
 +	bits = block * BBTTAG_BITS;
 +
 +	byte = bits / 8;
 +	bits = bits % 8;
-+	
++
 +	return (ra->bbt[byte] >> bits) & BBTTAG_BITS_MASK;
 +}
 +
-+int nand_bbt_set(struct ra_nand_chip *ra, int block, int tag)
++int ra_nand_bbt_set(struct ra_nand_chip *ra, int block, int tag)
 +{
 +	int byte, bits;
 +	bits = block * BBTTAG_BITS;
@@ -1199,14 +1197,14 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	byte = bits / 8;
 +	bits = bits % 8;
 +
-+	// If previous tag is bad, dont overwrite it	
++	// If previous tag is bad, dont overwrite it
 +	if (((ra->bbt[byte] >> bits) & BBTTAG_BITS_MASK) == BBT_TAG_BAD)
 +	{
 +		return BBT_TAG_BAD;
 +	}
 +
 +	ra->bbt[byte] = (ra->bbt[byte] & ~(BBTTAG_BITS_MASK << bits)) | ((tag & BBTTAG_BITS_MASK) << bits);
-+		
++
 +	return tag;
 +}
 +
@@ -1237,7 +1235,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		block = offs >> ra->erase_shift;
 +	}
 +
-+	tag = nand_bbt_get(ra, block);
++	tag = ra_nand_bbt_get(ra, block);
 +
 +	if (tag == BBT_TAG_UNKNOWN) {
 +		ret = nfc_read_oob(ra, page, ra->badblockpos, (char*)&tag, 1, FLAG_NONE);
@@ -1246,19 +1244,16 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		else
 +			tag = BBT_TAG_BAD;
 +
-+		nand_bbt_set(ra, block, tag);
++		ra_nand_bbt_set(ra, block, tag);
 +	}
 +
 +	if (tag != BBT_TAG_GOOD) {
 +		printk("%s: offs:%x tag: %s \n", __func__, (unsigned int)offs, str[tag]);
 +		return 1;
 +	}
-+	else 
++	else
 +		return 0;
-+	
 +}
-+
-+
 +
 +/**
 + * nand_block_markbad -
@@ -1278,7 +1273,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	page = offs >> ra->page_shift;
 +	block = offs >> ra->erase_shift;
 +
-+	tag = nand_bbt_get(ra, block);
++	tag = ra_nand_bbt_get(ra, block);
 +
 +	if (tag == BBT_TAG_BAD) {
 +		printk("%s: mark repeatedly \n", __func__);
@@ -1300,16 +1295,14 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		ret = nfc_write_page(ra, ra->buffers, page, FLAG_USE_GDMA);
 +		if (ret)
 +			printk("%s: fail to write bad block tag \n", __func__);
-+		
-+	}	
++	}
 +
 +tag_bbt:
 +	//update bbt
-+	nand_bbt_set(ra, block, tag);
++	ra_nand_bbt_set(ra, block, tag);
 +
 +	return 0;
 +}
-+
 +
 +#if defined (WORKAROUND_RX_BUF_OV)
 +/**
@@ -1321,7 +1314,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int chipsize = 1 << ra->chip_shift;
 +	int blocksize = 1 << ra->erase_shift;
 +
-+	
++
 +	while (offs < chipsize) {
 +		if (nand_block_checkbad(ra, offs)) //scan and verify the unknown tag
 +			break;
@@ -1332,12 +1325,10 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		offs = chipsize - blocksize;
 +	}
 +
-+	nand_bbt_set(ra, (unsigned int)offs>>ra->erase_shift, BBT_TAG_RES);	 // tag bbt only, instead of update badblockpos of flash.
++	ra_nand_bbt_set(ra, (unsigned int)offs>>ra->erase_shift, BBT_TAG_RES);	 // tag bbt only, instead of update badblockpos of flash.
 +	return (offs >> ra->page_shift);
 +}
 +#endif
-+
-+
 +
 +/**
 + * nand_erase_nand - [Internal] erase block(s)
@@ -1347,12 +1338,12 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 + *
 + * Erase one ore more blocks
 + */
-+int _nand_erase_nand(struct ra_nand_chip *ra, struct erase_info *instr)
++static int _nand_erase_nand(struct ra_nand_chip *ra, struct erase_info *instr)
 +{
 +	int page, len, status, ret;
 +	unsigned int addr, blocksize = 1<<ra->erase_shift;
 +
-+	ra_dbg("%s: start:%x, len:%x \n", __func__, 
++	ra_dbg("%s: start:%x, len:%x \n", __func__,
 +	       (unsigned int)instr->addr, (unsigned int)instr->len);
 +
 +//#define BLOCK_ALIGNED(a) ((a) & (blocksize - 1)) // already defined
@@ -1403,7 +1394,6 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			goto erase_exit;
 +		}
 +
-+
 +		/* Increment page address and decrement length */
 +		len -= blocksize;
 +		addr += blocksize;
@@ -1419,7 +1409,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		mtd_erase_callback(instr);
 +
 +	if (ret) {
-+		nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_BAD);
++		ra_nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_BAD);
 +	}
 +
 +	/* Return more or less happy */
@@ -1428,7 +1418,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +static int
 +nand_write_oob_buf(struct ra_nand_chip *ra, uint8_t *buf, uint8_t *oob, size_t size,
-+		   int mode, int ooboffs)
++                   int mode, int ooboffs)
 +{
 +	size_t oobsize = 1<<ra->oob_shift;
 +	struct nand_oobfree *free;
@@ -1481,8 +1471,8 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	return retsize;
 +}
 +
-+static int nand_read_oob_buf(struct ra_nand_chip *ra, uint8_t *oob, size_t size, 
-+			     int mode, int ooboffs) 
++static int nand_read_oob_buf(struct ra_nand_chip *ra, uint8_t *oob, size_t size,
++                             int mode, int ooboffs)
 +{
 +	size_t oobsize = 1<<ra->oob_shift;
 +	uint8_t *buf = ra->buffers + (1<<ra->page_shift);
@@ -1504,9 +1494,9 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		struct nand_oobfree *free;
 +		uint32_t woffs = ooboffs;
 +
-+		if (ooboffs > ra->oob->oobavail) 
++		if (ooboffs > ra->oob->oobavail)
 +			return -1;
-+		
++
 +		size = min(size, ra->oob->oobavail - ooboffs);
 +		for(free = ra->oob->oobfree; free->length && size; free++) {
 +			int wlen = free->length - woffs;
@@ -1517,7 +1507,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +				woffs = -wlen;
 +				continue;
 +			}
-+			
++
 +			bytes = min_t(size_t, size, wlen);
 +			memcpy (oob, buf + free->offset + woffs, bytes);
 +			woffs = 0;
@@ -1530,7 +1520,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	default:
 +		BUG();
 +	}
-+	
++
 +	return -1;
 +}
 +
@@ -1543,7 +1533,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 + * NAND write with ECC
 + */
 +static int nand_do_write_ops(struct ra_nand_chip *ra, loff_t to,
-+			     struct mtd_oob_ops *ops)
++                             struct mtd_oob_ops *ops)
 +{
 +	int page;
 +	uint32_t datalen = ops->len;
@@ -1556,7 +1546,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	loff_t addr = to;
 +	//int i = 0; //for ra_dbg only
 +
-+	ra_dbg("%s: to:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x oobmode:%x \n", 
++	ra_dbg("%s: to:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x oobmode:%x \n",
 +	       __func__, (unsigned int)to, data, oob, datalen, ooblen, ops->ooboffs, ops->mode);
 +
 +	ops->retlen = 0;
@@ -1566,10 +1556,10 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	/* Invalidate the page cache, when we write to the cached page */
 +	ra->buffers_page = -1;
 +
-+	
++
 +	if (data ==0)
 +		datalen = 0;
-+	
++
 +	// oob sequential (burst) write
 +	if (datalen == 0 && ooblen) {
 +		int len = ((ooblen + ops->ooboffs) + (ra->oob->oobavail - 1)) / ra->oob->oobavail * oobsize;
@@ -1609,25 +1599,25 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		int offs;
 +		int ecc_en = 0;
 +
-+		ra_dbg("%s (%d): addr:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x \n", 
++		ra_dbg("%s (%d): addr:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x \n",
 +		       __func__, i++, (unsigned int)addr, data, oob, datalen, ooblen, ops->ooboffs);
 +
 +		page = (int)((addr & ((1<<ra->chip_shift)-1)) >> ra->page_shift); //chip boundary
-+		
++
 +		/* select chip, and check if it is write protected */
 +		if (nfc_enable_chip(ra, addr, 0))
 +			return -EIO;
 +
 +		// oob write
 +		if (ops->mode == MTD_OPS_AUTO_OOB) {
-+			//fixme, this path is not yet varified 
++			//fixme, this path is not yet varified
 +			nfc_read_oob(ra, page, 0, ra->buffers + pagesize, oobsize, FLAG_NONE);
 +		}
 +		if (oob && ooblen > 0) {
 +			len = nand_write_oob_buf(ra, ra->buffers + pagesize, oob, ooblen, ops->mode, ops->ooboffs);
-+			if (len < 0) 
++			if (len < 0)
 +				return -EINVAL;
-+			
++
 +			oob += len;
 +			ops->oobretlen += len;
 +			ooblen -= len;
@@ -1646,13 +1636,13 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +			ecc_en = FLAG_ECC_EN;
 +		}
 +		ret = nfc_write_page(ra, ra->buffers, page, FLAG_USE_GDMA | FLAG_VERIFY |
-+				     ((ops->mode == MTD_OPS_RAW || ops->mode == MTD_OPS_PLACE_OOB) ? 0 : ecc_en ));
++		                     ((ops->mode == MTD_OPS_RAW || ops->mode == MTD_OPS_PLACE_OOB) ? 0 : ecc_en ));
 +		if (ret) {
-+			nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_BAD);
++			ra_nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_BAD);
 +			return ret;
 +		}
 +
-+		nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_GOOD);
++		ra_nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_GOOD);
 +
 +		addr = (page+1) << ra->page_shift;
 +
@@ -1670,7 +1660,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 + * Internal function. Called with chip held.
 + */
 +static int nand_do_read_ops(struct ra_nand_chip *ra, loff_t from,
-+			    struct mtd_oob_ops *ops)
++                            struct mtd_oob_ops *ops)
 +{
 +	int page;
 +	uint32_t datalen = ops->len;
@@ -1682,7 +1672,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	loff_t addr = from;
 +	//int i = 0; //for ra_dbg only
 +
-+	ra_dbg("%s: addr:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x \n", 
++	ra_dbg("%s: addr:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x \n",
 +	       __func__, (unsigned int)addr, data, oob, datalen, ooblen, ops->ooboffs);
 +
 +	ops->retlen = 0;
@@ -1696,25 +1686,25 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		int ret;
 +		int offs;
 +
-+		ra_dbg("%s (%d): addr:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x \n", 
++		ra_dbg("%s (%d): addr:%x, ops data:%p, oob:%p datalen:%x ooblen:%x, ooboffs:%x \n",
 +		       __func__, i++, (unsigned int)addr, data, oob, datalen, ooblen, ops->ooboffs);
 +		/* select chip */
 +		if (nfc_enable_chip(ra, addr, 1) < 0)
 +			return -EIO;
 +
-+		page = (int)((addr & ((1<<ra->chip_shift)-1)) >> ra->page_shift); 
++		page = (int)((addr & ((1<<ra->chip_shift)-1)) >> ra->page_shift);
 +
-+		ret = nfc_read_page(ra, ra->buffers, page, FLAG_VERIFY | 
-+				    ((ops->mode == MTD_OPS_RAW || ops->mode == MTD_OPS_PLACE_OOB) ? 0: FLAG_ECC_EN ));
++		ret = nfc_read_page(ra, ra->buffers, page, FLAG_VERIFY |
++		                    ((ops->mode == MTD_OPS_RAW || ops->mode == MTD_OPS_PLACE_OOB) ? 0: FLAG_ECC_EN ));
 +		//FIXME, something strange here, some page needs 2 more tries to guarantee read success.
 +		if (ret) {
 +			printk("read again:\n");
-+			ret = nfc_read_page(ra, ra->buffers, page, FLAG_VERIFY | 
-+					    ((ops->mode == MTD_OPS_RAW || ops->mode == MTD_OPS_PLACE_OOB) ? 0: FLAG_ECC_EN ));
++			ret = nfc_read_page(ra, ra->buffers, page, FLAG_VERIFY |
++			                    ((ops->mode == MTD_OPS_RAW || ops->mode == MTD_OPS_PLACE_OOB) ? 0: FLAG_ECC_EN ));
 +
 +			if (ret) {
 +				printk("read again fail \n");
-+				nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_BAD);
++				ra_nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_BAD);
 +				if ((ret != -EUCLEAN) && (ret != -EBADMSG)) {
 +					return ret;
 +				}
@@ -1754,7 +1744,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		}
 +
 +
-+		nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_GOOD);
++		ra_nand_bbt_set(ra, addr >> ra->erase_shift, BBT_TAG_GOOD);
 +		// address go further to next page, instead of increasing of length of write. This avoids some special cases wrong.
 +		addr = (page+1) << ra->page_shift;
 +	}
@@ -1768,7 +1758,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	int ret;
 +
 +	ra_dbg("%s: start:%x, len:%x \n", __func__,
-+		(unsigned int)instr->addr, (unsigned int)instr->len);
++	       (unsigned int)instr->addr, (unsigned int)instr->len);
 +
 +	nand_get_device(ra, FL_ERASING);
 +	ret = _nand_erase_nand((struct ra_nand_chip *)mtd->priv, instr);
@@ -1779,7 +1769,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +static int
 +ramtd_nand_write(struct mtd_info *mtd, loff_t to, size_t len,
-+		size_t *retlen, const uint8_t *buf)
++                 size_t *retlen, const uint8_t *buf)
 +{
 +	struct ra_nand_chip *ra = mtd->priv;
 +	struct mtd_oob_ops ops;
@@ -1812,9 +1802,8 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +static int
 +ramtd_nand_read(struct mtd_info *mtd, loff_t from, size_t len,
-+		size_t *retlen, uint8_t *buf)
++                size_t *retlen, uint8_t *buf)
 +{
-+
 +	struct ra_nand_chip *ra = mtd->priv;
 +	int ret;
 +	struct mtd_oob_ops ops;
@@ -1842,12 +1831,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	nand_release_device(ra);
 +
 +	return ret;
-+
 +}
 +
 +static int
 +ramtd_nand_readoob(struct mtd_info *mtd, loff_t from,
-+			struct mtd_oob_ops *ops)
++                   struct mtd_oob_ops *ops)
 +{
 +	struct ra_nand_chip *ra = mtd->priv;
 +	int ret;
@@ -1865,7 +1853,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +static int
 +ramtd_nand_writeoob(struct mtd_info *mtd, loff_t to,
-+			struct mtd_oob_ops *ops)
++                    struct mtd_oob_ops *ops)
 +{
 +	struct ra_nand_chip *ra = mtd->priv;
 +	int ret;
@@ -1915,11 +1903,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	{
 +		nibble = *(p+i) & 0xf;
 +		if ((nibble != 0x0) && (nibble != 0xf) && (nibble != 0x3) && (nibble != 0xc) &&
-+			(nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
++		        (nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
 +			return -1;
 +		nibble = ((*(p+i)) >> 4) & 0xf;
 +		if ((nibble != 0x0) && (nibble != 0xf) && (nibble != 0x3) && (nibble != 0xc) &&
-+			(nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
++		        (nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
 +			return -1;
 +	}
 +
@@ -1928,11 +1916,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	{
 +		nibble = *(p+i) & 0xf;
 +		if ((nibble != 0x0) && (nibble != 0xf) && (nibble != 0x3) && (nibble != 0xc) &&
-+			(nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
++		        (nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
 +			return -1;
 +		nibble = ((*(p+i)) >> 4) & 0xf;
 +		if ((nibble != 0x0) && (nibble != 0xf) && (nibble != 0x3) && (nibble != 0xc) &&
-+			(nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
++		        (nibble != 0x5) && (nibble != 0xa) && (nibble != 0x6) && (nibble != 0x9))
 +			return -1;
 +	}
 +
@@ -1965,8 +1953,6 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	return 0;
 +}
 +
-+
-+
 +/************************************************************
 + * the init/exit section.
 + */
@@ -1975,10 +1961,10 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	.eccbytes = CONFIG_ECC_BYTES,
 +	.eccpos = {5, 6, 7},
 +	.oobfree = {
-+		 {.offset = 0, .length = 4},
-+		 {.offset = 8, .length = 8},
-+		 {.offset = 0, .length = 0}
-+	 },
++		{.offset = 0, .length = 4},
++		{.offset = 8, .length = 8},
++		{.offset = 0, .length = 0}
++	},
 +#define RA_CHIP_OOB_AVAIL (4+8)
 +	.oobavail = RA_CHIP_OOB_AVAIL,
 +	// 5th byte is bad-block flag.
@@ -1987,32 +1973,17 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +static int
 +mtk_nand_probe(struct platform_device *pdev)
 +{
-+        struct mtd_part_parser_data ppdata;
++	struct mtd_part_parser_data ppdata;
 +	struct ra_nand_chip *ra;
 +	int alloc_size, bbt_size, buffers_size, reg, err;
 +	unsigned char chip_mode = 12;
 +
-+/*	if(ra_check_flash_type()!=BOOT_FROM_NAND) {
-+		return 0;
-+	}*/
++	/*	if(ra_check_flash_type()!=BOOT_FROM_NAND) {
++			return 0;
++		}*/
 +
 +	//FIXME: config 512 or 2048-byte page according to HWCONF
-+#if defined (CONFIG_RALINK_RT6855A)
-+	reg = ra_inl(RALINK_SYSCTL_BASE+0x8c);
-+	chip_mode = ((reg>>28) & 0x3)|(((reg>>22) & 0x3)<<2);
-+	if (chip_mode == 1) {
-+		printk("! nand 2048\n");
-+		ra_or(NFC_CONF1, 1);
-+		is_nand_page_2048 = 1;
-+		nand_addrlen = 5;
-+	}
-+	else {
-+		printk("! nand 512\n");
-+		ra_and(NFC_CONF1, ~1);
-+		is_nand_page_2048 = 0;
-+		nand_addrlen = 4;
-+	}	
-+#elif (defined (CONFIG_RALINK_MT7620) || defined (CONFIG_RALINK_RT6855))
++#if defined (CONFIG_SOC_MT7620)
 +	ra_outl(RALINK_SYSCTL_BASE+0x60, ra_inl(RALINK_SYSCTL_BASE+0x60) & ~(0x3<<18));
 +	reg = ra_inl(RALINK_SYSCTL_BASE+0x10);
 +	chip_mode = (reg & 0x0F);
@@ -2027,19 +1998,19 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +		is_nand_page_2048 = 0;
 +		nand_addrlen = ((chip_mode!=10) ? 3 : 4);
 +		printk("!!! nand page size = 512, addr len=%d\n", nand_addrlen);
-+	}			
++	}
 +#else
 +	is_nand_page_2048 = 0;
 +	nand_addrlen = 3;
 +	printk("!!! nand page size = 512, addr len=%d\n", nand_addrlen);
-+#endif			
++#endif
 +
-+#if defined (CONFIG_RALINK_RT6855A) || defined (CONFIG_RALINK_MT7620) || defined (CONFIG_RALINK_RT6855) 
++#if defined (CONFIG_SOC_MT7620)
 +	//config ECC location
-+    ra_and(NFC_CONF1, 0xfff000ff);
++	ra_and(NFC_CONF1, 0xfff000ff);
 +	ra_or(NFC_CONF1, ((CONFIG_ECC_OFFSET + 2) << 16) +
-+						((CONFIG_ECC_OFFSET + 1) << 12) +
-+						(CONFIG_ECC_OFFSET << 8));
++	      ((CONFIG_ECC_OFFSET + 1) << 12) +
++	      (CONFIG_ECC_OFFSET << 8));
 +#endif
 +
 +#define ALIGNE_16(a) (((unsigned long)(a)+15) & ~15)
@@ -2049,7 +2020,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +	alloc_size = buffers_size + bbt_size;
 +	alloc_size += buffers_size; //for ra->readback_buffers
-+	alloc_size += sizeof(*ra); 
++	alloc_size += sizeof(*ra);
 +	alloc_size += sizeof(*ranfc_mtd);
 +
 +	//make sure gpio-0 is input
@@ -2064,11 +2035,11 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +	//dynamic
 +	ra->buffers = (char *)((char *)ra + sizeof(*ra));
-+	ra->readback_buffers = ra->buffers + buffers_size; 
-+	ra->bbt = ra->readback_buffers + buffers_size; 
++	ra->readback_buffers = ra->buffers + buffers_size;
++	ra->bbt = ra->readback_buffers + buffers_size;
 +	ranfc_mtd = (struct mtd_info *)(ra->bbt + bbt_size);
 +
-+	//static 
++	//static
 +	ra->numchips		= CONFIG_NUMCHIPS;
 +	ra->chip_shift		= CONFIG_CHIP_SIZE_BIT;
 +	ra->page_shift		= CONFIG_PAGE_SIZE_BIT;
@@ -2094,11 +2065,12 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	ranfc_mtd->size		= CONFIG_NUMCHIPS * CFG_CHIPSIZE;
 +	ranfc_mtd->erasesize	= CFG_BLOCKSIZE;
 +	ranfc_mtd->writesize	= CFG_PAGESIZE;
++	ranfc_mtd->writebufsize = ranfc_mtd->writesize;
 +	ranfc_mtd->oobsize 	= CFG_PAGE_OOBSIZE;
 +	ranfc_mtd->oobavail	= RA_CHIP_OOB_AVAIL;
 +	ranfc_mtd->name		= "ra_nfc";
 +	//ranfc_mtd->index
-+	ranfc_mtd->ecclayout	= &ra_oob_layout;
++	//ranfc_mtd->ecclayout	= &ra_oob_layout;
 +	//ranfc_mtd->numberaseregions
 +	//ranfc_mtd->eraseregions
 +	//ranfc_mtd->bansize
@@ -2109,7 +2081,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	ranfc_mtd->_write	= ramtd_nand_write;
 +	ranfc_mtd->_read_oob	= ramtd_nand_readoob;
 +	ranfc_mtd->_write_oob	= ramtd_nand_writeoob;
-+	//ranfc_mtd->get_fact_prot_info; ranfc_mtd->read_fact_prot_reg; 
++	//ranfc_mtd->get_fact_prot_info; ranfc_mtd->read_fact_prot_reg;
 +	//ranfc_mtd->get_user_prot_info; ranfc_mtd->read_user_prot_reg;
 +	//ranfc_mtd->write_user_prot_reg; ranfc_mtd->lock_user_prot_reg;
 +	//ranfc_mtd->writev; ranfc_mtd->sync; ranfc_mtd->lock; ranfc_mtd->unlock; ranfc_mtd->suspend; ranfc_mtd->resume;
@@ -2126,12 +2098,12 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +	ra->controller = &ra->hwcontrol;
 +	mutex_init(ra->controller);
 +
-+	printk("%s: alloc %x, at %p , btt(%p, %x), ranfc_mtd:%p\n", 
++	printk("%s: alloc %x, at %p , btt(%p, %x), ranfc_mtd:%p\n",
 +	       __func__ , alloc_size, ra, ra->bbt, bbt_size, ranfc_mtd);
 +
-+	ppdata.of_node = pdev->dev.of_node;
++	mtd_set_of_node(ranfc_mtd, pdev->dev.of_node);
 +	err = mtd_device_parse_register(ranfc_mtd, mtk_probe_types,
-+			&ppdata, NULL, 0);
++	                                &ppdata, NULL, 0);
 +
 +	return err;
 +}
@@ -2169,8 +2141,10 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +module_platform_driver(mtk_nand_driver);
 +
-+
 +MODULE_LICENSE("GPL");
+diff --git a/drivers/mtd/maps/ralink_nand.h b/drivers/mtd/maps/ralink_nand.h
+new file mode 100644
+index 0000000..30a0c37
 --- /dev/null
 +++ b/drivers/mtd/maps/ralink_nand.h
 @@ -0,0 +1,232 @@
@@ -2209,7 +2183,7 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +//#define CONFIG_CHIP_SIZE_BIT (is_nand_page_2048? 29 : 25)	//! (1<<NAND_SIZE_BYTE) MB
 +#define CONFIG_PAGE_SIZE_BIT (is_nand_page_2048? 11 : 9)	//! (1<<PAGE_SIZE) MB
 +//#define CONFIG_SUBPAGE_BIT 1		//! these bits will be compensate by command cycle
-+#define CONFIG_NUMPAGE_PER_BLOCK_BIT (is_nand_page_2048? 6 : 5)	//! order of number of pages a block. 
++#define CONFIG_NUMPAGE_PER_BLOCK_BIT (is_nand_page_2048? 6 : 5)	//! order of number of pages a block.
 +#define CONFIG_OOBSIZE_PER_PAGE_BIT (is_nand_page_2048? 6 : 4)	//! byte number of oob a page.
 +#define CONFIG_BAD_BLOCK_POS (is_nand_page_2048? 0 : 4)     //! offset of byte to denote bad block.
 +#define CONFIG_ECC_BYTES 3      //! ecc has 3 bytes
@@ -2217,8 +2191,8 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +//this section should not be modified.
 +//#define CFG_COLUMN_ADDR_MASK ((1 << (CONFIG_PAGE_SIZE_BIT - CONFIG_SUBPAGE_BIT)) - 1)
-+//#define CFG_COLUMN_ADDR_CYCLE (((CONFIG_PAGE_SIZE_BIT - CONFIG_SUBPAGE_BIT) + 7)/8) 
-+//#define CFG_ROW_ADDR_CYCLE ((CONFIG_CHIP_SIZE_BIT - CONFIG_PAGE_SIZE_BIT + 7)/8) 
++//#define CFG_COLUMN_ADDR_CYCLE (((CONFIG_PAGE_SIZE_BIT - CONFIG_SUBPAGE_BIT) + 7)/8)
++//#define CFG_ROW_ADDR_CYCLE ((CONFIG_CHIP_SIZE_BIT - CONFIG_PAGE_SIZE_BIT + 7)/8)
 +//#define CFG_ADDR_CYCLE (CFG_COLUMN_ADDR_CYCLE + CFG_ROW_ADDR_CYCLE)
 +
 +#define CFG_COLUMN_ADDR_CYCLE   (is_nand_page_2048? 2 : 1)
@@ -2231,8 +2205,8 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +#define CFG_BLOCKSIZE 	(CFG_PAGESIZE << CONFIG_NUMPAGE_PER_BLOCK_BIT)
 +#define CFG_NUMPAGE	(1 << (CONFIG_CHIP_SIZE_BIT - CONFIG_PAGE_SIZE_BIT))
 +#define CFG_NUMBLOCK	(CFG_NUMPAGE >> CONFIG_NUMPAGE_PER_BLOCK_BIT)
-+#define CFG_BLOCK_OOBSIZE	(1 << (CONFIG_OOBSIZE_PER_PAGE_BIT + CONFIG_NUMPAGE_PER_BLOCK_BIT))	
-+#define CFG_PAGE_OOBSIZE	(1 << CONFIG_OOBSIZE_PER_PAGE_BIT)	
++#define CFG_BLOCK_OOBSIZE	(1 << (CONFIG_OOBSIZE_PER_PAGE_BIT + CONFIG_NUMPAGE_PER_BLOCK_BIT))
++#define CFG_PAGE_OOBSIZE	(1 << CONFIG_OOBSIZE_PER_PAGE_BIT)
 +
 +#define NAND_BLOCK_ALIGN(addr) ((addr) & (CFG_BLOCKSIZE-1))
 +#define NAND_PAGE_ALIGN(addr) ((addr) & (CFG_PAGESIZE-1))
@@ -2394,15 +2368,17 @@ Signed-off-by: John Crispin <blogic@openwrt.org>
 +
 +
 +
-+//fixme, gdma api 
++//fixme, gdma api
 +int nand_dma_sync(void);
 +void release_dma_buf(void);
-+int set_gdma_ch(unsigned long dst, 
-+		unsigned long src, unsigned int len, int burst_size,
-+		int soft_mode, int src_req_type, int dst_req_type,
-+		int src_burst_mode, int dst_burst_mode);
++int set_gdma_ch(unsigned long dst,
++                unsigned long src, unsigned int len, int burst_size,
++                int soft_mode, int src_req_type, int dst_req_type,
++                int src_burst_mode, int dst_burst_mode);
 +
 +
 +
 +
 +#endif
+-- 
+2.7.4
