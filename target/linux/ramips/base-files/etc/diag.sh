@@ -133,9 +133,7 @@ get_status_led() {
 		status_led="$board:blue:status"
 		;;
 	miwifi-mini|\
-	xiaomi,miwifi-r3)\
-		status_led="$board:blue:status"
-		;;
+	xiaomi,miwifi-r3|\
 	zte-q7)
 		status_led="$board:red:status"
 		;;
