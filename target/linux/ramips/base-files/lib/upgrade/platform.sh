@@ -240,6 +240,10 @@ platform_do_upgrade() {
 	local board=$(ramips_board_name)
 
 	case "$board" in
+	xiaomi,miwifi-r3|\
+ 	ubnt-erx-sfp)
+ 		nand_do_upgrade "$ARGV"
+ 		;;
 	*)
 		default_do_upgrade "$ARGV"
 		;;
