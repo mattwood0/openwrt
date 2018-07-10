@@ -78,7 +78,6 @@ platform_check_image() {
 	microwrt|\
 	miniembplug|\
 	miniembwifi|\
-	xiaomi,miwifi-r3|\
 	miwifi-mini|\
 	miwifi-nano|\
 	mlw221|\
@@ -207,6 +206,10 @@ platform_check_image() {
 		nand_do_platform_check "$board" "$1"
 		return $?;
 		;;
+	ubnt-erx-sfp)
+		nand_do_platform_check "${board//,/_}" "$1"
+ 		return $?;
+ 		;;
 	esac
 
 	echo "Sysupgrade is not yet supported on $board."
