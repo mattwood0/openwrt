@@ -67,7 +67,6 @@ ramips_setup_interfaces()
 	dir-615-h1|\
 	firewrt|\
 	hlk-rm04|\
-	xiaomi,miwifi-r3|\
 	miwifi-mini|\
 	miwifi-nano|\
 	mt7621|\
@@ -297,6 +296,7 @@ ramips_setup_macs()
 	ht-tm02)
 		lan_mac=$(cat /sys/class/net/eth0/address)
 		;;
+	xiaomi,miwifi-r3 |\
 	linkits7688 | \
 	linkits7688d)
 		wan_mac=$(mtd_get_mac_binary factory 4)
